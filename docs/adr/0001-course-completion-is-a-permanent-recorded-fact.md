@@ -11,5 +11,6 @@ A student has completed a course once they have completed every lesson in it and
 
 - A completed student can have less than 100% progress on the current version of the course. That is intended, not a data error.
 - Completion must be recorded at both triggers: completing the last outstanding lesson and passing the last outstanding quiz. Lesson completion itself stays independent of the lesson's quiz.
+- A new enrollment for a student who already meets the rule (for example after unenrolling and enrolling again, by purchase or by redeeming a team seat) is recorded as Completed straight away, dated like the backfill (#10).
 - Enrollments that met the rule before recording existed need a one-off backfill, dated to the student's last qualifying activity.
 - Changing the completion rule later applies only to students who have not yet completed; it does not re-evaluate those who have.

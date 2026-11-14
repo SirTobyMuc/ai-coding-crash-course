@@ -524,6 +524,28 @@ describe("instructorReportingService", () => {
       ]);
     });
 
+    it("lists every quiz of a lesson that has more than one", () => {
+      const lesson = addLesson(base.course.id, 1);
+      const firstQuiz = addQuiz(lesson.id);
+      const secondQuiz = addQuiz(lesson.id);
+
+      expect(getRosterQuizzes(base.course.id)).toEqual([
+        { quizId: firstQuiz.id, quizTitle: "Quiz", lessonTitle: "Lesson 1" },
+        { quizId: secondQuiz.id, quizTitle: "Quiz", lessonTitle: "Lesson 1" },
+      ]);
+    });
+
+    it("covers the same quizzes that 'quizzes not passed' counts", () => {
+      const lesson = addLesson(base.course.id, 1);
+      addQuiz(lesson.id);
+      addQuiz(lesson.id);
+      enroll(base.user.id, base.course.id);
+
+      const [student] = getCourseDrillDown(base.course.id).students;
+      expect(getRosterQuizzes(base.course.id)).toHaveLength(2);
+      expect(student.quizzesNotPassed).toBe(2);
+    });
+
     it("returns no quizzes for a course without any", () => {
       addLesson(base.course.id, 1);
       expect(getRosterQuizzes(base.course.id)).toEqual([]);
