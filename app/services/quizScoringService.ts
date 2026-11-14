@@ -4,9 +4,9 @@ import {
   quizzes,
   quizQuestions,
   quizOptions,
-  quizAttempts,
   quizAnswers,
 } from "~/db/schema";
+import { recordAttempt } from "~/services/quizService";
 
 function scoreMultipleChoiceQuestions(quizData: any, answers: any): any {
   let correctCount = 0;
@@ -234,16 +234,8 @@ export function computeResult(
     const passed = scoreValue > 0.7;
     const grade = calculateGrade(scoreValue);
 
-    const attempt = db
-      .insert(quizAttempts)
-      .values({
-        userId,
-        quizId,
-        score: scoreValue,
-        passed,
-      })
-      .returning()
-      .get();
+    // Recording the attempt also records course completion when it is earned.
+    const attempt = recordAttempt(userId, quizId, scoreValue, passed);
 
     for (const result of questionResults) {
       if (result.selectedOptionId !== null) {

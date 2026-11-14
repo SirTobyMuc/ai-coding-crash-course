@@ -1,19 +1,20 @@
 import { Link } from "react-router";
 import type { Route } from "./+types/instructor.$courseId.students";
 import { getCourseById } from "~/services/courseService";
-import { getCourseEnrolledStudents } from "~/services/enrollmentService";
+import {
+  getBestQuizScores,
+  getCourseDrillDown,
+  getRosterQuizzes,
+  type TeamSeatCounts,
+} from "~/services/instructorReportingService";
 import { getUserById } from "~/services/userService";
-import { calculateProgress } from "~/services/progressService";
-import { getQuizByLessonId, getBestAttempt } from "~/services/quizService";
 import { getCurrentUserId } from "~/lib/session";
+import { formatAmountPaid } from "~/lib/reporting";
 import { UserRole } from "~/db/schema";
 import { Card, CardContent } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { AlertTriangle, ArrowLeft, Users, Award } from "lucide-react";
 import { data, isRouteErrorResponse } from "react-router";
-import { db } from "~/db";
-import { modules, lessons } from "~/db/schema";
-import { eq } from "drizzle-orm";
 
 export function meta({ loaderData }: Route.MetaArgs) {
   const title = loaderData?.course?.title ?? "Student Roster";
@@ -57,70 +58,22 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     });
   }
 
-  // Get all enrolled students
-  const enrolledStudents = getCourseEnrolledStudents(courseId);
+  const rosterQuizzes = getRosterQuizzes(courseId);
 
-  // Get all lessons with quizzes for this course
-  const courseModules = db
-    .select({ id: modules.id })
-    .from(modules)
-    .where(eq(modules.courseId, courseId))
-    .all();
+  // Student rows: identity, progress, completion and what each paid
+  const drillDown = getCourseDrillDown(courseId);
 
-  // Get all lessons across all modules
-  const allCourseLessons: { id: number; title: string }[] = [];
-  for (const mod of courseModules) {
-    const modLessons = db
-      .select({ id: lessons.id, title: lessons.title })
-      .from(lessons)
-      .where(eq(lessons.moduleId, mod.id))
-      .all();
-    allCourseLessons.push(...modLessons);
-  }
+  const students = drillDown.students.map((student) => ({
+    ...student,
+    quizScores: getBestQuizScores(student.userId, rosterQuizzes),
+  }));
 
-  // Find which lessons have quizzes
-  const lessonQuizzes: { lessonId: number; lessonTitle: string; quizId: number; quizTitle: string }[] = [];
-  for (const lesson of allCourseLessons) {
-    const quiz = getQuizByLessonId(lesson.id);
-    if (quiz) {
-      lessonQuizzes.push({
-        lessonId: lesson.id,
-        lessonTitle: lesson.title,
-        quizId: quiz.id,
-        quizTitle: quiz.title,
-      });
-    }
-  }
-
-  // Build student data with progress and quiz scores
-  const students = enrolledStudents.map((enrollment) => {
-    const studentUser = getUserById(enrollment.userId);
-    const progress = calculateProgress(enrollment.userId, courseId, false, false);
-
-    // Get best quiz attempt for each quiz in this course
-    const quizScores = lessonQuizzes.map((lq) => {
-      const bestAttempt = getBestAttempt(enrollment.userId, lq.quizId);
-      return {
-        quizId: lq.quizId,
-        quizTitle: lq.quizTitle,
-        lessonTitle: lq.lessonTitle,
-        bestScore: bestAttempt?.score ?? null,
-        passed: bestAttempt?.passed ?? null,
-      };
-    });
-
-    return {
-      userId: enrollment.userId,
-      name: studentUser?.name ?? "Unknown",
-      email: studentUser?.email ?? "",
-      enrolledAt: enrollment.enrolledAt,
-      completedAt: enrollment.completedAt,
-      progress,
-      quizScores,
-    };
-  });
-
-  return { course, students, quizCount: lessonQuizzes.length };
+  return {
+    course,
+    students,
+    purchasesWithoutEnrollment: drillDown.purchasesWithoutEnrollment,
+    quizCount: rosterQuizzes.length,
+  };
 }
 
 function progressBar(progress: number) {
@@ -135,6 +88,27 @@ function progressBar(progress: number) {
       <span className="text-sm font-medium">{progress}%</span>
     </div>
   );
+}
+
+/** A count with its noun, e.g. "1 quiz" or "3 quizzes". */
+function countOf(count: number, singular: string, plural: string) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function quizzesNotPassedNote(count: number) {
+  return `${countOf(count, "quiz", "quizzes")} not passed`;
+}
+
+function seatsNote(seats: TeamSeatCounts) {
+  return `${countOf(seats.seatsBought, "seat", "seats")}, ${seats.seatsRedeemed} redeemed`;
+}
+
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 function quizScoreBadge(score: number | null, passed: boolean | null) {
@@ -164,7 +138,8 @@ function quizScoreBadge(score: number | null, passed: boolean | null) {
 export default function InstructorStudentRoster({
   loaderData,
 }: Route.ComponentProps) {
-  const { course, students, quizCount } = loaderData;
+  const { course, students, purchasesWithoutEnrollment, quizCount } =
+    loaderData;
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -202,13 +177,12 @@ export default function InstructorStudentRoster({
       <div className="mb-4 flex items-center gap-4 text-sm text-muted-foreground">
         <span className="flex items-center gap-1.5">
           <Users className="size-4" />
-          {students.length} {students.length === 1 ? "student" : "students"}{" "}
-          enrolled
+          {countOf(students.length, "student", "students")} enrolled
         </span>
         {quizCount > 0 && (
           <span className="flex items-center gap-1.5">
             <Award className="size-4" />
-            {quizCount} {quizCount === 1 ? "quiz" : "quizzes"}
+            {countOf(quizCount, "quiz", "quizzes")}
           </span>
         )}
       </div>
@@ -241,6 +215,9 @@ export default function InstructorStudentRoster({
                     <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
                       Status
                     </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                      Amount Paid
+                    </th>
                     {quizCount > 0 && (
                       <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
                         Quiz Scores
@@ -250,13 +227,7 @@ export default function InstructorStudentRoster({
                 </thead>
                 <tbody>
                   {students.map((student) => {
-                    const enrolledDate = new Date(
-                      student.enrolledAt
-                    ).toLocaleDateString("en-US", {
-                      year: "numeric",
-                      month: "short",
-                      day: "numeric",
-                    });
+                    const enrolledDate = formatDate(student.enrolledAt);
 
                     return (
                       <tr
@@ -293,6 +264,28 @@ export default function InstructorStudentRoster({
                               Not Started
                             </span>
                           )}
+                          {!student.completedAt &&
+                            student.progress === 100 &&
+                            student.quizzesNotPassed > 0 && (
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {quizzesNotPassedNote(student.quizzesNotPassed)}
+                              </p>
+                            )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <p className="text-sm font-medium">
+                            {formatAmountPaid(student.amountPaid)}
+                          </p>
+                          {student.teamBuyer && (
+                            <p className="text-xs text-muted-foreground">
+                              Team seat, paid by {student.teamBuyer.name}
+                            </p>
+                          )}
+                          {student.teamPurchase && (
+                            <p className="text-xs text-muted-foreground">
+                              {seatsNote(student.teamPurchase)}
+                            </p>
+                          )}
                         </td>
                         {quizCount > 0 && (
                           <td className="px-4 py-3">
@@ -317,6 +310,69 @@ export default function InstructorStudentRoster({
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* Purchases whose buyer has no enrollment: with the student rows, these
+          make up the course's Total Paid. */}
+      {purchasesWithoutEnrollment.length > 0 && (
+        <section className="mt-8">
+          <h2 className="mb-1 text-xl font-semibold">
+            Purchases without enrollment
+          </h2>
+          <p className="mb-4 text-sm text-muted-foreground">
+            Paid for this course by someone not enrolled on it: team buyers
+            and students who unenrolled.
+          </p>
+          <Card>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/50">
+                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                        Buyer
+                      </th>
+                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                        Purchased
+                      </th>
+                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                        Amount Paid
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {purchasesWithoutEnrollment.map((p) => (
+                      <tr
+                        key={p.purchaseId}
+                        className="border-b border-border last:border-0"
+                      >
+                        <td className="px-4 py-3">
+                          <p className="text-sm font-medium">{p.buyer.name}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {p.buyer.email}
+                          </p>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-muted-foreground">
+                          {formatDate(p.purchasedAt)}
+                        </td>
+                        <td className="px-4 py-3">
+                          <p className="text-sm font-medium">
+                            {formatAmountPaid(p.amountPaid)}
+                          </p>
+                          {p.teamPurchase && (
+                            <p className="text-xs text-muted-foreground">
+                              {seatsNote(p.teamPurchase)}
+                            </p>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </section>
       )}
     </div>
   );
