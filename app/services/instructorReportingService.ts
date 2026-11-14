@@ -335,15 +335,15 @@ export type QuizScore = RosterQuiz & {
 };
 
 /**
- * The course's quizzes in lesson order, taking the first quiz of each lesson.
+ * Every quiz in the course, in lesson order: the same quizzes that completion
+ * requires and that "quizzes not passed" counts.
  */
 export function getRosterQuizzes(courseId: number): RosterQuiz[] {
-  const rows = db
+  return db
     .select({
-      lessonId: lessons.id,
-      lessonTitle: lessons.title,
       quizId: quizzes.id,
       quizTitle: quizzes.title,
+      lessonTitle: lessons.title,
     })
     .from(quizzes)
     .innerJoin(lessons, eq(lessons.id, quizzes.lessonId))
@@ -351,19 +351,6 @@ export function getRosterQuizzes(courseId: number): RosterQuiz[] {
     .where(eq(modules.courseId, courseId))
     .orderBy(modules.id, lessons.id, quizzes.id)
     .all();
-
-  const lessonsSeen = new Set<number>();
-  const rosterQuizzes: RosterQuiz[] = [];
-  for (const row of rows) {
-    if (lessonsSeen.has(row.lessonId)) continue;
-    lessonsSeen.add(row.lessonId);
-    rosterQuizzes.push({
-      quizId: row.quizId,
-      quizTitle: row.quizTitle,
-      lessonTitle: row.lessonTitle,
-    });
-  }
-  return rosterQuizzes;
 }
 
 /** One student's best attempt at each of the given quizzes. */
