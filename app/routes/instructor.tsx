@@ -1,7 +1,8 @@
 import { Link } from "react-router";
 import type { Route } from "./+types/instructor";
 import { getCoursesByInstructor, getLessonCountForCourse } from "~/services/courseService";
-import { getEnrollmentCountForCourse } from "~/services/enrollmentService";
+import { getCourseSummariesForInstructor } from "~/services/instructorReportingService";
+import { formatAmountPaid, formatCompleted } from "~/lib/reporting";
 import { getCurrentUserId } from "~/lib/session";
 import { getUserById } from "~/services/userService";
 import { Card, CardContent, CardFooter, CardHeader } from "~/components/ui/card";
@@ -38,9 +39,16 @@ export async function loader({ request }: Route.LoaderArgs) {
 
   const instructorCourses = getCoursesByInstructor(currentUserId);
 
+  const summaries = new Map(
+    getCourseSummariesForInstructor(currentUserId).map((summary) => [
+      summary.courseId,
+      summary,
+    ])
+  );
+
   const coursesWithStats = instructorCourses.map((course) => {
     const lessonCount = getLessonCountForCourse(course.id);
-    const enrollmentCount = getEnrollmentCountForCourse(course.id);
+    const summary = summaries.get(course.id);
 
     return {
       id: course.id,
@@ -50,13 +58,24 @@ export async function loader({ request }: Route.LoaderArgs) {
       status: course.status,
       coverImageUrl: course.coverImageUrl,
       lessonCount,
-      enrollmentCount,
+      enrollmentCount: summary?.enrolledCount ?? 0,
+      totalPaid: summary?.totalPaid ?? 0,
+      completedCount: summary?.completedCount ?? 0,
       createdAt: course.createdAt,
       updatedAt: course.updatedAt,
     };
   });
 
-  return { courses: coursesWithStats };
+  const totals = coursesWithStats.reduce(
+    (acc, course) => ({
+      enrollmentCount: acc.enrollmentCount + course.enrollmentCount,
+      totalPaid: acc.totalPaid + course.totalPaid,
+      completedCount: acc.completedCount + course.completedCount,
+    }),
+    { enrollmentCount: 0, totalPaid: 0, completedCount: 0 }
+  );
+
+  return { courses: coursesWithStats, totals };
 }
 
 function statusBadge(status: string) {
@@ -83,6 +102,9 @@ function statusBadge(status: string) {
       return null;
   }
 }
+
+const headCell =
+  "px-4 py-3 text-xs font-medium uppercase tracking-wider text-muted-foreground";
 
 export function HydrateFallback() {
   return (
@@ -121,7 +143,7 @@ export function HydrateFallback() {
 export default function InstructorDashboard({
   loaderData,
 }: Route.ComponentProps) {
-  const { courses } = loaderData;
+  const { courses, totals } = loaderData;
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -138,7 +160,7 @@ export default function InstructorDashboard({
         <div>
           <h1 className="text-3xl font-bold">My Courses</h1>
           <p className="mt-1 text-muted-foreground">
-            Manage your courses and track enrollments
+            Manage your courses and see how they are doing
           </p>
         </div>
         <Link to="/instructor/new">
@@ -164,6 +186,66 @@ export default function InstructorDashboard({
           </Link>
         </div>
       ) : (
+        <>
+        <div className="mb-8 overflow-x-auto rounded-lg border border-border">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-border bg-muted/50">
+                <th className={`${headCell} text-left`}>Course</th>
+                <th className={`${headCell} text-left`}>Status</th>
+                <th className={`${headCell} text-right`}>Enrolled</th>
+                <th className={`${headCell} text-right`}>Total Paid</th>
+                <th className={`${headCell} text-right`}>Completed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {courses.map((course) => (
+                <tr key={course.id} className="border-b border-border">
+                  <td className="px-4 py-3 text-sm font-medium">
+                    <Link
+                      to={`/instructor/${course.id}/students`}
+                      className="hover:text-primary hover:underline"
+                    >
+                      {course.title}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-3">{statusBadge(course.status)}</td>
+                  <td className="px-4 py-3 text-right text-sm tabular-nums">
+                    {course.enrollmentCount}
+                  </td>
+                  <td className="px-4 py-3 text-right text-sm tabular-nums">
+                    {formatAmountPaid(course.totalPaid)}
+                  </td>
+                  <td className="px-4 py-3 text-right text-sm tabular-nums">
+                    {formatCompleted(
+                      course.completedCount,
+                      course.enrollmentCount
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="bg-muted/50 font-semibold">
+                <td className="px-4 py-3 text-sm" colSpan={2}>
+                  Total
+                </td>
+                <td className="px-4 py-3 text-right text-sm tabular-nums">
+                  {totals.enrollmentCount}
+                </td>
+                <td className="px-4 py-3 text-right text-sm tabular-nums">
+                  {formatAmountPaid(totals.totalPaid)}
+                </td>
+                <td className="px-4 py-3 text-right text-sm tabular-nums">
+                  {formatCompleted(
+                    totals.completedCount,
+                    totals.enrollmentCount
+                  )}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {courses.map((course) => (
             <Card key={course.id} className="flex flex-col overflow-hidden pt-0">
@@ -217,6 +299,7 @@ export default function InstructorDashboard({
             </Card>
           ))}
         </div>
+        </>
       )}
     </div>
   );
