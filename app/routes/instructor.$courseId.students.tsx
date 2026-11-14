@@ -1,11 +1,11 @@
 import { Link } from "react-router";
 import type { Route } from "./+types/instructor.$courseId.students";
 import { getCourseById } from "~/services/courseService";
-import { getCourseEnrolledStudents } from "~/services/enrollmentService";
+import { getCourseDrillDown } from "~/services/instructorReportingService";
 import { getUserById } from "~/services/userService";
-import { calculateProgress } from "~/services/progressService";
 import { getQuizByLessonId, getBestAttempt } from "~/services/quizService";
 import { getCurrentUserId } from "~/lib/session";
+import { formatAmountPaid } from "~/lib/reporting";
 import { UserRole } from "~/db/schema";
 import { Card, CardContent } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
@@ -57,9 +57,6 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     });
   }
 
-  // Get all enrolled students
-  const enrolledStudents = getCourseEnrolledStudents(courseId);
-
   // Get all lessons with quizzes for this course
   const courseModules = db
     .select({ id: modules.id })
@@ -92,14 +89,13 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     }
   }
 
-  // Build student data with progress and quiz scores
-  const students = enrolledStudents.map((enrollment) => {
-    const studentUser = getUserById(enrollment.userId);
-    const progress = calculateProgress(enrollment.userId, courseId, false, false);
+  // Student rows: identity, progress, completion and what each paid
+  const drillDown = getCourseDrillDown(courseId);
 
+  const students = drillDown.students.map((student) => {
     // Get best quiz attempt for each quiz in this course
     const quizScores = lessonQuizzes.map((lq) => {
-      const bestAttempt = getBestAttempt(enrollment.userId, lq.quizId);
+      const bestAttempt = getBestAttempt(student.userId, lq.quizId);
       return {
         quizId: lq.quizId,
         quizTitle: lq.quizTitle,
@@ -109,15 +105,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
       };
     });
 
-    return {
-      userId: enrollment.userId,
-      name: studentUser?.name ?? "Unknown",
-      email: studentUser?.email ?? "",
-      enrolledAt: enrollment.enrolledAt,
-      completedAt: enrollment.completedAt,
-      progress,
-      quizScores,
-    };
+    return { ...student, quizScores };
   });
 
   return { course, students, quizCount: lessonQuizzes.length };
@@ -135,6 +123,14 @@ function progressBar(progress: number) {
       <span className="text-sm font-medium">{progress}%</span>
     </div>
   );
+}
+
+function quizzesNotPassedNote(count: number) {
+  return `${count} ${count === 1 ? "quiz" : "quizzes"} not passed`;
+}
+
+function seatsNote(seats: { seatsBought: number; seatsRedeemed: number }) {
+  return `${seats.seatsBought} ${seats.seatsBought === 1 ? "seat" : "seats"}, ${seats.seatsRedeemed} redeemed`;
 }
 
 function quizScoreBadge(score: number | null, passed: boolean | null) {
@@ -241,6 +237,9 @@ export default function InstructorStudentRoster({
                     <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
                       Status
                     </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                      Amount Paid
+                    </th>
                     {quizCount > 0 && (
                       <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
                         Quiz Scores
@@ -292,6 +291,28 @@ export default function InstructorStudentRoster({
                             <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-800 dark:bg-gray-900/30 dark:text-gray-400">
                               Not Started
                             </span>
+                          )}
+                          {!student.completedAt &&
+                            student.progress === 100 &&
+                            student.quizzesNotPassed > 0 && (
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {quizzesNotPassedNote(student.quizzesNotPassed)}
+                              </p>
+                            )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <p className="text-sm font-medium">
+                            {formatAmountPaid(student.amountPaid)}
+                          </p>
+                          {student.teamBuyer && (
+                            <p className="text-xs text-muted-foreground">
+                              Team seat, paid by {student.teamBuyer.name}
+                            </p>
+                          )}
+                          {student.teamPurchase && (
+                            <p className="text-xs text-muted-foreground">
+                              {seatsNote(student.teamPurchase)}
+                            </p>
                           )}
                         </td>
                         {quizCount > 0 && (

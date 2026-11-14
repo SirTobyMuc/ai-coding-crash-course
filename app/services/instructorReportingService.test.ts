@@ -12,7 +12,10 @@ vi.mock("~/db", () => ({
 }));
 
 // Import after mock so the module picks up our test db
-import { getCourseSummariesForInstructor } from "./instructorReportingService";
+import {
+  getCourseDrillDown,
+  getCourseSummariesForInstructor,
+} from "./instructorReportingService";
 import { unenrollUser } from "./enrollmentService";
 
 let userCounter = 0;
@@ -88,6 +91,46 @@ function teamPurchase(
     if (redeemerId) enroll(redeemerId, courseId);
   }
   return bought;
+}
+
+function addLesson(courseId: number, position: number) {
+  const mod = testDb
+    .insert(schema.modules)
+    .values({ courseId, title: `Module ${position}`, position })
+    .returning()
+    .get();
+  return testDb
+    .insert(schema.lessons)
+    .values({ moduleId: mod.id, title: `Lesson ${position}`, position })
+    .returning()
+    .get();
+}
+
+function completeLesson(userId: number, lessonId: number) {
+  testDb
+    .insert(schema.lessonProgress)
+    .values({
+      userId,
+      lessonId,
+      status: schema.LessonProgressStatus.Completed,
+      completedAt: new Date().toISOString(),
+    })
+    .run();
+}
+
+function addQuiz(lessonId: number) {
+  return testDb
+    .insert(schema.quizzes)
+    .values({ lessonId, title: "Quiz", passingScore: 0.7 })
+    .returning()
+    .get();
+}
+
+function attemptQuiz(userId: number, quizId: number, passed: boolean) {
+  testDb
+    .insert(schema.quizAttempts)
+    .values({ userId, quizId, score: passed ? 0.9 : 0.4, passed })
+    .run();
 }
 
 describe("instructorReportingService", () => {
@@ -262,6 +305,123 @@ describe("instructorReportingService", () => {
       const other = addUser("Other Instructor", schema.UserRole.Instructor);
 
       expect(getCourseSummariesForInstructor(other.id)).toEqual([]);
+    });
+  });
+
+  describe("getCourseDrillDown", () => {
+    it("shows a student who bought the course themselves with the sum of their purchases", () => {
+      const enrollment = enroll(base.user.id, base.course.id);
+      purchase(base.user.id, base.course.id, 5999);
+      purchase(base.user.id, base.course.id, 1000);
+
+      expect(getCourseDrillDown(base.course.id).students).toEqual([
+        {
+          userId: base.user.id,
+          name: base.user.name,
+          email: base.user.email,
+          enrolledAt: enrollment.enrolledAt,
+          completedAt: null,
+          progress: 0,
+          amountPaid: 6999,
+          enrolledVia: "purchase",
+          teamBuyer: null,
+          teamPurchase: null,
+          quizzesNotPassed: 0,
+        },
+      ]);
+    });
+
+    it("shows a PPP-reduced purchase at the amount actually paid", () => {
+      enroll(base.user.id, base.course.id);
+      purchase(base.user.id, base.course.id, 2400);
+
+      const [row] = getCourseDrillDown(base.course.id).students;
+      expect(row.amountPaid).toBe(2400);
+      expect(row.enrolledVia).toBe("purchase");
+    });
+
+    it("shows a team seat student as paying nothing, with who paid for the seat", () => {
+      const buyer = addUser("Bossy McBossface");
+      const seat = addUser("Seat Holder");
+      teamPurchase(buyer.id, base.course.id, 29995, 5, [seat.id]);
+
+      expect(getCourseDrillDown(base.course.id).students).toMatchObject([
+        {
+          userId: seat.id,
+          amountPaid: 0,
+          enrolledVia: "teamSeat",
+          teamBuyer: { userId: buyer.id, name: "Bossy McBossface" },
+          teamPurchase: null,
+        },
+      ]);
+    });
+
+    it("shows a team buyer who redeemed their own seat with the full team amount and the seats", () => {
+      const buyer = addUser("Bossy McBossface");
+      const colleague = addUser("Colleague");
+      teamPurchase(buyer.id, base.course.id, 29995, 5, [buyer.id, colleague.id]);
+
+      const students = getCourseDrillDown(base.course.id).students;
+      expect(students.find((s) => s.userId === buyer.id)).toMatchObject({
+        amountPaid: 29995,
+        teamPurchase: { seatsBought: 5, seatsRedeemed: 2 },
+      });
+      expect(students.find((s) => s.userId === colleague.id)).toMatchObject({
+        amountPaid: 0,
+        teamBuyer: { userId: buyer.id, name: "Bossy McBossface" },
+        teamPurchase: null,
+      });
+    });
+
+    it("shows a student at 100% progress how many quizzes they have not passed", () => {
+      const first = addLesson(base.course.id, 1);
+      const second = addLesson(base.course.id, 2);
+      const third = addLesson(base.course.id, 3);
+      const passedQuiz = addQuiz(first.id);
+      const failedQuiz = addQuiz(second.id);
+      addQuiz(third.id); // never attempted
+      enroll(base.user.id, base.course.id);
+      for (const lesson of [first, second, third]) {
+        completeLesson(base.user.id, lesson.id);
+      }
+      // Passed once, then failed a retry: still Passed.
+      attemptQuiz(base.user.id, passedQuiz.id, true);
+      attemptQuiz(base.user.id, passedQuiz.id, false);
+      attemptQuiz(base.user.id, failedQuiz.id, false);
+
+      expect(getCourseDrillDown(base.course.id).students).toMatchObject([
+        { progress: 100, completedAt: null, quizzesNotPassed: 2 },
+      ]);
+    });
+
+    it("keeps a student Completed when lessons were added after they completed", () => {
+      const first = addLesson(base.course.id, 1);
+      enroll(base.user.id, base.course.id, "2026-01-05T10:00:00.000Z");
+      completeLesson(base.user.id, first.id);
+      addLesson(base.course.id, 2);
+
+      expect(getCourseDrillDown(base.course.id).students).toMatchObject([
+        { progress: 50, completedAt: "2026-01-05T10:00:00.000Z" },
+      ]);
+    });
+
+    it("has one student row per enrolled student counted on the overview", () => {
+      const buyer = addUser("Team Buyer");
+      const seat = addUser("Seat Holder");
+      const leaver = addUser("Leaver");
+      enroll(base.user.id, base.course.id);
+      purchase(base.user.id, base.course.id, 5999);
+      enroll(addUser("Staff Without Purchase").id, base.course.id);
+      teamPurchase(buyer.id, base.course.id, 29995, 5, [seat.id]);
+      enroll(leaver.id, base.course.id);
+      purchase(leaver.id, base.course.id, 5999);
+      unenrollUser(leaver.id, base.course.id);
+
+      const [summary] = getCourseSummariesForInstructor(base.instructor.id);
+      const students = getCourseDrillDown(base.course.id).students;
+      expect(summary.enrolledCount).toBe(3);
+      expect(students).toHaveLength(3);
+      expect(students.map((s) => s.userId)).not.toContain(buyer.id);
     });
   });
 });
