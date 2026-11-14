@@ -16,7 +16,9 @@ import {
   enrollUser,
   findEnrollment,
   recordCompletionIfEarned,
+  unenrollUser,
 } from "./enrollmentService";
+import { redeemCoupon } from "./couponService";
 import { markLessonComplete, resetLessonProgress } from "./progressService";
 import {
   createQuiz,
@@ -264,6 +266,84 @@ describe("course completion", () => {
     });
   });
 
+  describe("enrolling", () => {
+    // A student who already meets the rule when an enrollment is created, e.g.
+    // after unenrolling and enrolling again (#10), is Completed straight away,
+    // dated to their last qualifying activity as the backfill would date it.
+
+    it("marks a re-enrollment as Completed, dated to the last qualifying activity", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-03-01T10:00:00.000Z"));
+      const [lesson] = addLessons(base.course.id, 1);
+      const quiz = createQuiz(lesson.id, "Quiz", 0.7);
+      enrollUser(base.user.id, base.course.id, false, false);
+      markLessonComplete(base.user.id, lesson.id);
+      vi.setSystemTime(new Date("2026-03-02T10:00:00.000Z"));
+      recordAttempt(base.user.id, quiz.id, 0.9, true);
+
+      unenrollUser(base.user.id, base.course.id);
+      vi.setSystemTime(new Date("2026-04-01T10:00:00.000Z"));
+      const enrollment = enrollUser(base.user.id, base.course.id, false, false);
+
+      expect(enrollment.completedAt).toBe("2026-03-02T10:00:00.000Z");
+      expect(completedAt(base.user.id, base.course.id)).toBe(
+        "2026-03-02T10:00:00.000Z"
+      );
+    });
+
+    it("does not mark a re-enrollment as Completed when the course has gained a lesson since", () => {
+      const [lesson] = addLessons(base.course.id, 1);
+      enrollUser(base.user.id, base.course.id, false, false);
+      markLessonComplete(base.user.id, lesson.id);
+      unenrollUser(base.user.id, base.course.id);
+
+      addLessons(base.course.id, 1);
+      enrollUser(base.user.id, base.course.id, false, false);
+
+      expect(completedAt(base.user.id, base.course.id)).toBeNull();
+    });
+
+    it("does not mark a first enrollment without activity as Completed", () => {
+      addLessons(base.course.id, 1);
+
+      const enrollment = enrollUser(base.user.id, base.course.id, false, false);
+
+      expect(enrollment.completedAt).toBeNull();
+    });
+
+    it("marks an enrollment from a redeemed team seat as Completed when the student already qualifies", () => {
+      const [lesson] = addLessons(base.course.id, 1);
+      enrollUser(base.user.id, base.course.id, false, false);
+      markLessonComplete(base.user.id, lesson.id);
+      unenrollUser(base.user.id, base.course.id);
+
+      const team = testDb.insert(schema.teams).values({}).returning().get();
+      const purchase = testDb
+        .insert(schema.purchases)
+        .values({
+          userId: base.instructor.id,
+          courseId: base.course.id,
+          amountPaid: 10000,
+        })
+        .returning()
+        .get();
+      testDb
+        .insert(schema.coupons)
+        .values({
+          teamId: team.id,
+          courseId: base.course.id,
+          code: "seat-1",
+          purchaseId: purchase.id,
+        })
+        .run();
+
+      const result = redeemCoupon("seat-1", base.user.id, "US");
+
+      expect(result.ok).toBe(true);
+      expect(completedAt(base.user.id, base.course.id)).not.toBeNull();
+    });
+  });
+
   describe("courses and users that cannot complete", () => {
     it("never marks a course with no lessons as Completed", () => {
       const empty = addCourse("empty-course");
@@ -288,7 +368,9 @@ describe("course completion", () => {
       markLessonComplete(base.instructor.id, lesson.id);
       recordAttempt(base.instructor.id, quiz.id, 0.9, true);
 
-      expect(findEnrollment(base.instructor.id, base.course.id)).toBeUndefined();
+      expect(
+        findEnrollment(base.instructor.id, base.course.id)
+      ).toBeUndefined();
     });
 
     it("completes only the course the lesson belongs to", () => {

@@ -83,11 +83,9 @@ export function enrollUser(
     }
   }
 
-  const enrollment = db
-    .insert(enrollments)
-    .values({ userId, courseId })
-    .returning()
-    .get();
+  const enrollment = recordCompletionIfAlreadyEarned(
+    db.insert(enrollments).values({ userId, courseId }).returning().get()
+  );
 
   // sendEmail parameter accepted but not implemented (no email service — PRD out of scope)
   if (sendEmail) {
@@ -196,10 +194,33 @@ export function recordCompletionIfEarned(userId: number, courseId: number) {
   setCompletionIfAbsent(enrollment.id, new Date().toISOString());
 }
 
+type Enrollment = typeof enrollments.$inferSelect;
+
+// Marks an enrollment Completed if the student already meets the rule without
+// any new activity, dated to their last qualifying activity (falling back to
+// the enrollment date if no activity date is recorded). Returns whether it
+// marked the enrollment Completed.
+function completeIfAlreadyEarned(enrollment: Enrollment) {
+  const result = evaluateCompletion(enrollment.userId, enrollment.courseId);
+  if (!result.earned) return false;
+
+  const date = result.lastQualifyingActivity ?? enrollment.enrolledAt;
+  return setCompletionIfAbsent(enrollment.id, date);
+}
+
+// For a newly created enrollment: a student who already meets the rule, e.g.
+// after unenrolling and enrolling again (#10), is Completed straight away.
+// Returns the enrollment as it now stands.
+export function recordCompletionIfAlreadyEarned(enrollment: Enrollment) {
+  if (enrollment.completedAt || !completeIfAlreadyEarned(enrollment)) {
+    return enrollment;
+  }
+  return getEnrollmentById(enrollment.id) ?? enrollment;
+}
+
 // One-off backfill for students who met the completion rule before completion
 // was recorded. Every enrollment without a completion that meets the rule is
-// marked Completed, dated to the student's last qualifying activity (falling
-// back to the enrollment date if no activity date is recorded). Enrollments
+// marked Completed, dated as completeIfAlreadyEarned dates it. Enrollments
 // that already have a completion are never touched, so running it again
 // changes nothing. Returns the number of enrollments it marked Completed.
 export function backfillCompletions() {
@@ -209,15 +230,7 @@ export function backfillCompletions() {
     .where(isNull(enrollments.completedAt))
     .all();
 
-  let completed = 0;
-  for (const enrollment of pending) {
-    const result = evaluateCompletion(enrollment.userId, enrollment.courseId);
-    if (!result.earned) continue;
-
-    const date = result.lastQualifyingActivity ?? enrollment.enrolledAt;
-    if (setCompletionIfAbsent(enrollment.id, date)) completed++;
-  }
-  return completed;
+  return pending.filter(completeIfAlreadyEarned).length;
 }
 
 // Evaluates completion for the course a lesson belongs to.

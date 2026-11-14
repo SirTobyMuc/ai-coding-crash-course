@@ -1,6 +1,7 @@
 import { eq, and, isNull } from "drizzle-orm";
 import { db } from "~/db";
 import { coupons, purchases, enrollments } from "~/db/schema";
+import { recordCompletionIfAlreadyEarned } from "~/services/enrollmentService";
 import crypto from "crypto";
 
 // ─── Coupon Service ───
@@ -109,11 +110,13 @@ export function redeemCoupon(
     .where(eq(coupons.id, coupon.id))
     .run();
 
-  const enrollment = db
-    .insert(enrollments)
-    .values({ userId, courseId: coupon.courseId })
-    .returning()
-    .get();
+  const enrollment = recordCompletionIfAlreadyEarned(
+    db
+      .insert(enrollments)
+      .values({ userId, courseId: coupon.courseId })
+      .returning()
+      .get()
+  );
 
   return { ok: true, enrollment };
 }
