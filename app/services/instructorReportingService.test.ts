@@ -13,8 +13,10 @@ vi.mock("~/db", () => ({
 
 // Import after mock so the module picks up our test db
 import {
+  getBestQuizScores,
   getCourseDrillDown,
   getCourseSummariesForInstructor,
+  getRosterQuizzes,
 } from "./instructorReportingService";
 import { unenrollUser } from "./enrollmentService";
 
@@ -323,7 +325,6 @@ describe("instructorReportingService", () => {
           completedAt: null,
           progress: 0,
           amountPaid: 6999,
-          enrolledVia: "purchase",
           teamBuyer: null,
           teamPurchase: null,
           quizzesNotPassed: 0,
@@ -337,7 +338,6 @@ describe("instructorReportingService", () => {
 
       const [row] = getCourseDrillDown(base.course.id).students;
       expect(row.amountPaid).toBe(2400);
-      expect(row.enrolledVia).toBe("purchase");
     });
 
     it("shows a team seat student as paying nothing, with who paid for the seat", () => {
@@ -349,7 +349,6 @@ describe("instructorReportingService", () => {
         {
           userId: seat.id,
           amountPaid: 0,
-          enrolledVia: "teamSeat",
           teamBuyer: { userId: buyer.id, name: "Bossy McBossface" },
           teamPurchase: null,
         },
@@ -506,6 +505,43 @@ describe("instructorReportingService", () => {
         expect(summary.totalPaid).toBe(39394);
         expect(pageTotal).toBe(39394);
       });
+    });
+  });
+
+  describe("getRosterQuizzes", () => {
+    it("lists the course's quizzes in lesson order, skipping lessons without one", () => {
+      const first = addLesson(base.course.id, 1);
+      addLesson(base.course.id, 2); // no quiz
+      const third = addLesson(base.course.id, 3);
+      const thirdQuiz = addQuiz(third.id);
+      const firstQuiz = addQuiz(first.id);
+      const other = addCourse(base.instructor.id, "other-course");
+      addQuiz(addLesson(other.id, 1).id);
+
+      expect(getRosterQuizzes(base.course.id)).toEqual([
+        { quizId: firstQuiz.id, quizTitle: "Quiz", lessonTitle: "Lesson 1" },
+        { quizId: thirdQuiz.id, quizTitle: "Quiz", lessonTitle: "Lesson 3" },
+      ]);
+    });
+
+    it("returns no quizzes for a course without any", () => {
+      addLesson(base.course.id, 1);
+      expect(getRosterQuizzes(base.course.id)).toEqual([]);
+    });
+  });
+
+  describe("getBestQuizScores", () => {
+    it("gives a student's best attempt per quiz, and nulls for an unattempted one", () => {
+      const attempted = addQuiz(addLesson(base.course.id, 1).id);
+      addQuiz(addLesson(base.course.id, 2).id);
+      attemptQuiz(base.user.id, attempted.id, false);
+      attemptQuiz(base.user.id, attempted.id, true);
+
+      const quizzes = getRosterQuizzes(base.course.id);
+      expect(getBestQuizScores(base.user.id, quizzes)).toEqual([
+        { ...quizzes[0], bestScore: 0.9, passed: true },
+        { ...quizzes[1], bestScore: null, passed: null },
+      ]);
     });
   });
 });

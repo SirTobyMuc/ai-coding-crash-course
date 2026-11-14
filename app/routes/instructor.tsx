@@ -58,7 +58,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       status: course.status,
       coverImageUrl: course.coverImageUrl,
       lessonCount,
-      enrollmentCount: summary?.enrolledCount ?? 0,
+      enrolledCount: summary?.enrolledCount ?? 0,
       totalPaid: summary?.totalPaid ?? 0,
       completedCount: summary?.completedCount ?? 0,
       createdAt: course.createdAt,
@@ -68,11 +68,11 @@ export async function loader({ request }: Route.LoaderArgs) {
 
   const totals = coursesWithStats.reduce(
     (acc, course) => ({
-      enrollmentCount: acc.enrollmentCount + course.enrollmentCount,
+      enrolledCount: acc.enrolledCount + course.enrolledCount,
       totalPaid: acc.totalPaid + course.totalPaid,
       completedCount: acc.completedCount + course.completedCount,
     }),
-    { enrollmentCount: 0, totalPaid: 0, completedCount: 0 }
+    { enrolledCount: 0, totalPaid: 0, completedCount: 0 }
   );
 
   return { courses: coursesWithStats, totals };
@@ -211,7 +211,7 @@ export default function InstructorDashboard({
                   </td>
                   <td className="px-4 py-3">{statusBadge(course.status)}</td>
                   <td className="px-4 py-3 text-right text-sm tabular-nums">
-                    {course.enrollmentCount}
+                    {course.enrolledCount}
                   </td>
                   <td className="px-4 py-3 text-right text-sm tabular-nums">
                     {formatAmountPaid(course.totalPaid)}
@@ -219,7 +219,7 @@ export default function InstructorDashboard({
                   <td className="px-4 py-3 text-right text-sm tabular-nums">
                     {formatCompleted(
                       course.completedCount,
-                      course.enrollmentCount
+                      course.enrolledCount
                     )}
                   </td>
                 </tr>
@@ -231,7 +231,7 @@ export default function InstructorDashboard({
                   Total
                 </td>
                 <td className="px-4 py-3 text-right text-sm tabular-nums">
-                  {totals.enrollmentCount}
+                  {totals.enrolledCount}
                 </td>
                 <td className="px-4 py-3 text-right text-sm tabular-nums">
                   {formatAmountPaid(totals.totalPaid)}
@@ -239,7 +239,7 @@ export default function InstructorDashboard({
                 <td className="px-4 py-3 text-right text-sm tabular-nums">
                   {formatCompleted(
                     totals.completedCount,
-                    totals.enrollmentCount
+                    totals.enrolledCount
                   )}
                 </td>
               </tr>
@@ -282,8 +282,8 @@ export default function InstructorDashboard({
                   <div className="flex items-center gap-1.5">
                     <Users className="size-4" />
                     <span>
-                      {course.enrollmentCount}{" "}
-                      {course.enrollmentCount === 1 ? "student" : "students"}
+                      {course.enrolledCount}{" "}
+                      {course.enrolledCount === 1 ? "student" : "students"}
                     </span>
                   </div>
                 </div>

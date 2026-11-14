@@ -7,9 +7,9 @@ import {
   lessons,
   lessonProgress,
   quizzes,
-  quizAttempts,
   LessonProgressStatus,
 } from "~/db/schema";
+import { passedQuizzesInCourse } from "~/services/passedQuizService";
 
 // ─── Enrollment Service ───
 // Handles enrollment, unenrollment, duplicate prevention, and enrollment validation.
@@ -112,17 +112,6 @@ export function unenrollUser(userId: number, courseId: number) {
     .get();
 }
 
-export function markEnrollmentComplete(userId: number, courseId: number) {
-  return db
-    .update(enrollments)
-    .set({ completedAt: new Date().toISOString() })
-    .where(
-      and(eq(enrollments.userId, userId), eq(enrollments.courseId, courseId))
-    )
-    .returning()
-    .get();
-}
-
 // The completion rule (ADR 0001): a student has earned completion of a course
 // once every lesson in it is completed and every quiz in it is Passed. Returns
 // whether it is earned and, if so, the student's last qualifying activity: the
@@ -154,20 +143,15 @@ function evaluateCompletion(
   if (!lessonCounts || lessonCounts.total === 0) return { earned: false };
   if (lessonCounts.completed < lessonCounts.total) return { earned: false };
 
-  // A quiz is Passed once any one attempt passed, whatever came after it, so it
-  // counts as Passed from its first passing attempt.
+  // A quiz counts as Passed from its first passing attempt; a quiz with no
+  // passing attempt has no date.
+  const passed = passedQuizzesInCourse(courseId, userId);
   const firstPasses = db
-    .select({
-      firstPassedAt: sql<string | null>`(
-        select min(${quizAttempts.attemptedAt}) from ${quizAttempts}
-        where ${quizAttempts.quizId} = ${quizzes.id}
-          and ${quizAttempts.userId} = ${userId}
-          and ${quizAttempts.passed} = 1
-      )`,
-    })
+    .select({ firstPassedAt: passed.firstPassedAt })
     .from(quizzes)
     .innerJoin(lessons, eq(quizzes.lessonId, lessons.id))
     .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .leftJoin(passed, eq(passed.quizId, quizzes.id))
     .where(eq(modules.courseId, courseId))
     .all();
 

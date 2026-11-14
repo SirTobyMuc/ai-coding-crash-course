@@ -1,4 +1,4 @@
-import { and, count, countDistinct, eq, isNotNull, sum } from "drizzle-orm";
+import { and, count, eq, isNotNull, sum } from "drizzle-orm";
 import { db } from "~/db";
 import {
   coupons,
@@ -9,10 +9,15 @@ import {
   lessons,
   modules,
   purchases,
-  quizAttempts,
   quizzes,
   users,
 } from "~/db/schema";
+import { passedQuizzesInCourse } from "~/services/passedQuizService";
+import {
+  getTotalLessonCount,
+  progressPercent,
+} from "~/services/progressService";
+import { getBestAttempt } from "~/services/quizService";
 
 // ─── Instructor Reporting Service ───
 // Read-side numbers for instructors: how their courses are doing.
@@ -73,6 +78,9 @@ export function getCourseSummariesForInstructor(
   }));
 }
 
+/** Team seats bought by team purchases, and how many of them are redeemed. */
+export type TeamSeatCounts = { seatsBought: number; seatsRedeemed: number };
+
 export type DrillDownStudent = {
   userId: number;
   name: string;
@@ -83,12 +91,10 @@ export type DrillDownStudent = {
   progress: number;
   /** Sum of this student's own purchases for the course, in US cents. */
   amountPaid: number;
-  /** How the enrollment was obtained; "none" when neither applies. */
-  enrolledVia: "purchase" | "teamSeat" | "none";
   /** For a team seat student, who paid for the seat, unless it was themselves. */
   teamBuyer: { userId: number; name: string } | null;
   /** For a student who is also a team buyer, the seats their team purchases bought. */
-  teamPurchase: { seatsBought: number; seatsRedeemed: number } | null;
+  teamPurchase: TeamSeatCounts | null;
   /** Quizzes in the course with no passing attempt by this student. */
   quizzesNotPassed: number;
 };
@@ -100,7 +106,7 @@ export type PurchaseWithoutEnrollment = {
   amountPaid: number;
   purchasedAt: string;
   /** For a team purchase, the team seats it bought and how many are redeemed. */
-  teamPurchase: { seatsBought: number; seatsRedeemed: number } | null;
+  teamPurchase: TeamSeatCounts | null;
 };
 
 export type CourseDrillDown = {
@@ -118,7 +124,55 @@ export type CourseDrillDown = {
  * paid and where they stand.
  */
 export function getCourseDrillDown(courseId: number): CourseDrillDown {
-  const studentRows = db
+  const studentRows = getEnrolledStudents(courseId);
+
+  // Purchases whose buyer is not among the enrolled students: team buyers
+  // who never redeemed a seat, and students who unenrolled.
+  const enrolledUserIds = new Set(studentRows.map((r) => r.userId));
+  const purchasesWithoutEnrollment = getCoursePurchases(courseId).filter(
+    (p) => !enrolledUserIds.has(p.buyer.userId)
+  );
+
+  return {
+    students: toDrillDownStudents(courseId, studentRows),
+    purchasesWithoutEnrollment,
+  };
+}
+
+type EnrolledStudentRow = ReturnType<typeof getEnrolledStudents>[number];
+
+function toDrillDownStudents(
+  courseId: number,
+  studentRows: EnrolledStudentRow[]
+): DrillDownStudent[] {
+  const paidByUser = getAmountPaidByUser(courseId);
+  const teamBuyerByRedeemer = getTeamBuyerByRedeemer(courseId);
+  const seatsByBuyer = countTeamSeats(courseId, purchases.userId);
+  const lessonCount = getTotalLessonCount(courseId);
+  const completedLessonsByUser = getCompletedLessonCountByUser(courseId);
+  const quizCount = getQuizCount(courseId);
+  const passedQuizzesByUser = getPassedQuizCountByUser(courseId);
+
+  return studentRows.map((row) => {
+    const seatBuyer = teamBuyerByRedeemer.get(row.userId);
+    return {
+      ...row,
+      progress: progressPercent(
+        completedLessonsByUser.get(row.userId) ?? 0,
+        lessonCount
+      ),
+      quizzesNotPassed: quizCount - (passedQuizzesByUser.get(row.userId) ?? 0),
+      amountPaid: paidByUser.get(row.userId) ?? 0,
+      // Someone else paid; a buyer on their own seat is shown by teamPurchase.
+      teamBuyer:
+        seatBuyer && seatBuyer.userId !== row.userId ? seatBuyer : null,
+      teamPurchase: seatsByBuyer.get(row.userId) ?? null,
+    };
+  });
+}
+
+function getEnrolledStudents(courseId: number) {
+  return db
     .select({
       userId: users.id,
       name: users.name,
@@ -131,8 +185,11 @@ export function getCourseDrillDown(courseId: number): CourseDrillDown {
     .where(eq(enrollments.courseId, courseId))
     .orderBy(enrollments.enrolledAt, enrollments.id)
     .all();
+}
 
-  const paidRows = db
+// The sum of each buyer's own purchases for the course, in US cents.
+function getAmountPaidByUser(courseId: number): Map<number, number> {
+  const rows = db
     .select({
       userId: purchases.userId,
       amountPaid: sum(purchases.amountPaid).mapWith(Number),
@@ -141,11 +198,15 @@ export function getCourseDrillDown(courseId: number): CourseDrillDown {
     .where(eq(purchases.courseId, courseId))
     .groupBy(purchases.userId)
     .all();
-  const paidByUser = new Map(paidRows.map((r) => [r.userId, r.amountPaid]));
+  return new Map(rows.map((r) => [r.userId, r.amountPaid]));
+}
 
-  // A team seat student is connected to the money only through the team seat
-  // they redeemed and the team purchase it came from.
-  const redeemedSeatRows = db
+// A team seat student is connected to the money only through the team seat
+// they redeemed and the team purchase it came from.
+function getTeamBuyerByRedeemer(
+  courseId: number
+): Map<number | null, { userId: number; name: string }> {
+  const rows = db
     .select({
       redeemerId: coupons.redeemedByUserId,
       buyerId: users.id,
@@ -158,43 +219,40 @@ export function getCourseDrillDown(courseId: number): CourseDrillDown {
       and(eq(coupons.courseId, courseId), isNotNull(coupons.redeemedByUserId))
     )
     .all();
-  const teamBuyerByRedeemer = new Map(
-    redeemedSeatRows.map((r) => [
-      r.redeemerId,
-      { userId: r.buyerId, name: r.buyerName },
-    ])
+  return new Map(
+    rows.map((r) => [r.redeemerId, { userId: r.buyerId, name: r.buyerName }])
   );
+}
 
-  // Seats bought = team seats created from a buyer's team purchases;
-  // seats redeemed = those with a redeemer.
-  const seatRows = db
+// The course's team seats, grouped by the team purchase that bought them or by
+// its buyer. Seats bought = team seats created; seats redeemed = those with a
+// redeemer.
+function countTeamSeats(
+  courseId: number,
+  groupBy: typeof purchases.id | typeof purchases.userId
+): Map<number, TeamSeatCounts> {
+  const rows = db
     .select({
-      buyerId: purchases.userId,
+      key: groupBy,
       seatsBought: count(coupons.id),
       seatsRedeemed: count(coupons.redeemedByUserId),
     })
     .from(coupons)
     .innerJoin(purchases, eq(purchases.id, coupons.purchaseId))
     .where(eq(coupons.courseId, courseId))
-    .groupBy(purchases.userId)
+    .groupBy(groupBy)
     .all();
-  const seatsByBuyer = new Map(
-    seatRows.map((r) => [
-      r.buyerId,
+  return new Map(
+    rows.map((r) => [
+      r.key,
       { seatsBought: r.seatsBought, seatsRedeemed: r.seatsRedeemed },
     ])
   );
+}
 
-  // Progress counts completed lessons only, the same as calculateProgress.
-  const lessonCount =
-    db
-      .select({ n: count(lessons.id) })
-      .from(lessons)
-      .innerJoin(modules, eq(modules.id, lessons.moduleId))
-      .where(eq(modules.courseId, courseId))
-      .get()?.n ?? 0;
-
-  const completedLessonRows = db
+// How many of the course's lessons each student has completed.
+function getCompletedLessonCountByUser(courseId: number): Map<number, number> {
+  const rows = db
     .select({
       userId: lessonProgress.userId,
       completed: count(lessonProgress.id),
@@ -210,41 +268,36 @@ export function getCourseDrillDown(courseId: number): CourseDrillDown {
     )
     .groupBy(lessonProgress.userId)
     .all();
-  const completedLessonsByUser = new Map(
-    completedLessonRows.map((r) => [r.userId, r.completed])
-  );
+  return new Map(rows.map((r) => [r.userId, r.completed]));
+}
 
-  // A quiz is Passed once any one attempt passed, whatever came after it —
-  // the same definition completion recording uses.
-  const quizCount =
+function getQuizCount(courseId: number): number {
+  return (
     db
       .select({ n: count(quizzes.id) })
       .from(quizzes)
       .innerJoin(lessons, eq(lessons.id, quizzes.lessonId))
       .innerJoin(modules, eq(modules.id, lessons.moduleId))
       .where(eq(modules.courseId, courseId))
-      .get()?.n ?? 0;
-
-  const passedQuizRows = db
-    .select({
-      userId: quizAttempts.userId,
-      passed: countDistinct(quizAttempts.quizId),
-    })
-    .from(quizAttempts)
-    .innerJoin(quizzes, eq(quizzes.id, quizAttempts.quizId))
-    .innerJoin(lessons, eq(lessons.id, quizzes.lessonId))
-    .innerJoin(modules, eq(modules.id, lessons.moduleId))
-    .where(and(eq(modules.courseId, courseId), eq(quizAttempts.passed, true)))
-    .groupBy(quizAttempts.userId)
-    .all();
-  const passedQuizzesByUser = new Map(
-    passedQuizRows.map((r) => [r.userId, r.passed])
+      .get()?.n ?? 0
   );
+}
 
-  // Purchases whose buyer is not among the enrolled students: team buyers
-  // who never redeemed a seat, and students who unenrolled.
-  const enrolledUserIds = new Set(studentRows.map((r) => r.userId));
-  const purchaseRows = db
+// How many of the course's quizzes each student has Passed.
+function getPassedQuizCountByUser(courseId: number): Map<number, number> {
+  const passed = passedQuizzesInCourse(courseId);
+  const rows = db
+    .select({ userId: passed.userId, passed: count() })
+    .from(passed)
+    .groupBy(passed.userId)
+    .all();
+  return new Map(rows.map((r) => [r.userId, r.passed]));
+}
+
+// Every purchase for the course, oldest first, with the team seats it bought.
+function getCoursePurchases(courseId: number): PurchaseWithoutEnrollment[] {
+  const seatsByPurchase = countTeamSeats(courseId, purchases.id);
+  return db
     .select({
       purchaseId: purchases.id,
       userId: users.id,
@@ -257,57 +310,73 @@ export function getCourseDrillDown(courseId: number): CourseDrillDown {
     .innerJoin(users, eq(users.id, purchases.userId))
     .where(eq(purchases.courseId, courseId))
     .orderBy(purchases.createdAt, purchases.id)
-    .all();
-  const seatPurchaseRows = db
-    .select({
-      purchaseId: coupons.purchaseId,
-      seatsBought: count(coupons.id),
-      seatsRedeemed: count(coupons.redeemedByUserId),
-    })
-    .from(coupons)
-    .where(and(eq(coupons.courseId, courseId), isNotNull(coupons.purchaseId)))
-    .groupBy(coupons.purchaseId)
-    .all();
-  const seatsByPurchase = new Map(
-    seatPurchaseRows.map((r) => [
-      r.purchaseId,
-      { seatsBought: r.seatsBought, seatsRedeemed: r.seatsRedeemed },
-    ])
-  );
+    .all()
+    .map((r) => ({
+      purchaseId: r.purchaseId,
+      buyer: { userId: r.userId, name: r.name, email: r.email },
+      amountPaid: r.amountPaid,
+      purchasedAt: r.purchasedAt,
+      teamPurchase: seatsByPurchase.get(r.purchaseId) ?? null,
+    }));
+}
 
-  return {
-    purchasesWithoutEnrollment: purchaseRows
-      .filter((r) => !enrolledUserIds.has(r.userId))
-      .map((r) => ({
-        purchaseId: r.purchaseId,
-        buyer: { userId: r.userId, name: r.name, email: r.email },
-        amountPaid: r.amountPaid,
-        purchasedAt: r.purchasedAt,
-        teamPurchase: seatsByPurchase.get(r.purchaseId) ?? null,
-      })),
-    students: studentRows.map((row) => {
-      const amountPaid = paidByUser.get(row.userId);
-      const seatBuyer = teamBuyerByRedeemer.get(row.userId);
-      const completedLessons = completedLessonsByUser.get(row.userId) ?? 0;
-      return {
-        ...row,
-        progress:
-          lessonCount === 0
-            ? 0
-            : Math.round((completedLessons / lessonCount) * 100),
-        quizzesNotPassed:
-          quizCount - (passedQuizzesByUser.get(row.userId) ?? 0),
-        amountPaid: amountPaid ?? 0,
-        enrolledVia: seatBuyer
-          ? "teamSeat"
-          : amountPaid !== undefined
-            ? "purchase"
-            : "none",
-        // Someone else paid; a buyer on their own seat is shown by teamPurchase.
-        teamBuyer:
-          seatBuyer && seatBuyer.userId !== row.userId ? seatBuyer : null,
-        teamPurchase: seatsByBuyer.get(row.userId) ?? null,
-      };
-    }),
-  };
+/** A quiz in the course, as a column of the student roster. */
+export type RosterQuiz = {
+  quizId: number;
+  quizTitle: string;
+  lessonTitle: string;
+};
+
+export type QuizScore = RosterQuiz & {
+  /** The student's best attempt score as a fraction; null if unattempted. */
+  bestScore: number | null;
+  /** Whether that best attempt passed; null if unattempted. */
+  passed: boolean | null;
+};
+
+/**
+ * The course's quizzes in lesson order, taking the first quiz of each lesson.
+ */
+export function getRosterQuizzes(courseId: number): RosterQuiz[] {
+  const rows = db
+    .select({
+      lessonId: lessons.id,
+      lessonTitle: lessons.title,
+      quizId: quizzes.id,
+      quizTitle: quizzes.title,
+    })
+    .from(quizzes)
+    .innerJoin(lessons, eq(lessons.id, quizzes.lessonId))
+    .innerJoin(modules, eq(modules.id, lessons.moduleId))
+    .where(eq(modules.courseId, courseId))
+    .orderBy(modules.id, lessons.id, quizzes.id)
+    .all();
+
+  const lessonsSeen = new Set<number>();
+  const rosterQuizzes: RosterQuiz[] = [];
+  for (const row of rows) {
+    if (lessonsSeen.has(row.lessonId)) continue;
+    lessonsSeen.add(row.lessonId);
+    rosterQuizzes.push({
+      quizId: row.quizId,
+      quizTitle: row.quizTitle,
+      lessonTitle: row.lessonTitle,
+    });
+  }
+  return rosterQuizzes;
+}
+
+/** One student's best attempt at each of the given quizzes. */
+export function getBestQuizScores(
+  userId: number,
+  rosterQuizzes: RosterQuiz[]
+): QuizScore[] {
+  return rosterQuizzes.map((quiz) => {
+    const bestAttempt = getBestAttempt(userId, quiz.quizId);
+    return {
+      ...quiz,
+      bestScore: bestAttempt?.score ?? null,
+      passed: bestAttempt?.passed ?? null,
+    };
+  });
 }

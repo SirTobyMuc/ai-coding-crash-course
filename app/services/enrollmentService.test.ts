@@ -23,7 +23,6 @@ import {
   getEnrollmentCountForCourse,
   getUserEnrolledCourses,
   getCourseEnrolledStudents,
-  markEnrollmentComplete,
 } from "./enrollmentService";
 
 describe("enrollmentService", () => {
@@ -208,17 +207,6 @@ describe("enrollmentService", () => {
 
     it("returns 0 when no enrollments exist", () => {
       expect(getEnrollmentCountForCourse(base.course.id)).toBe(0);
-    });
-  });
-
-  describe("markEnrollmentComplete", () => {
-    it("sets completedAt on the enrollment", () => {
-      enrollUser(base.user.id, base.course.id, false, false);
-
-      const result = markEnrollmentComplete(base.user.id, base.course.id);
-      expect(result).toBeDefined();
-      expect(result!.completedAt).toBeDefined();
-      expect(result!.completedAt).not.toBeNull();
     });
   });
 

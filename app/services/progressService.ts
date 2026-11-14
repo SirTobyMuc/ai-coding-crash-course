@@ -132,6 +132,14 @@ export function resetLessonProgress(userId: number, lessonId: number) {
     .get();
 }
 
+/**
+ * Progress as a whole percent: the completed part of a total, rounded. A
+ * course with nothing to complete has 0% progress.
+ */
+export function progressPercent(completed: number, total: number): number {
+  return total === 0 ? 0 : Math.round((completed / total) * 100);
+}
+
 function getCourseLessonIds(courseId: number): number[] {
   const courseModules = db
     .select({ id: modules.id })
@@ -195,7 +203,7 @@ export function calculateProgress(
       .filter((l) => completedIds.has(l.id))
       .reduce((sum, l) => sum + (l.durationMinutes ?? 1), 0);
 
-    return Math.round((completedDuration / totalDuration) * 100);
+    return progressPercent(completedDuration, totalDuration);
   }
 
   const completedCount = db
@@ -210,7 +218,7 @@ export function calculateProgress(
     )
     .get();
 
-  return Math.round(((completedCount?.count ?? 0) / lessonIds.length) * 100);
+  return progressPercent(completedCount?.count ?? 0, lessonIds.length);
 }
 
 export function getCompletedLessonCount(userId: number, courseId: number) {

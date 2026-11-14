@@ -1,9 +1,13 @@
 import { Link } from "react-router";
 import type { Route } from "./+types/instructor.$courseId.students";
 import { getCourseById } from "~/services/courseService";
-import { getCourseDrillDown } from "~/services/instructorReportingService";
+import {
+  getBestQuizScores,
+  getCourseDrillDown,
+  getRosterQuizzes,
+  type TeamSeatCounts,
+} from "~/services/instructorReportingService";
 import { getUserById } from "~/services/userService";
-import { getQuizByLessonId, getBestAttempt } from "~/services/quizService";
 import { getCurrentUserId } from "~/lib/session";
 import { formatAmountPaid } from "~/lib/reporting";
 import { UserRole } from "~/db/schema";
@@ -11,9 +15,6 @@ import { Card, CardContent } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { AlertTriangle, ArrowLeft, Users, Award } from "lucide-react";
 import { data, isRouteErrorResponse } from "react-router";
-import { db } from "~/db";
-import { modules, lessons } from "~/db/schema";
-import { eq } from "drizzle-orm";
 
 export function meta({ loaderData }: Route.MetaArgs) {
   const title = loaderData?.course?.title ?? "Student Roster";
@@ -57,62 +58,21 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     });
   }
 
-  // Get all lessons with quizzes for this course
-  const courseModules = db
-    .select({ id: modules.id })
-    .from(modules)
-    .where(eq(modules.courseId, courseId))
-    .all();
-
-  // Get all lessons across all modules
-  const allCourseLessons: { id: number; title: string }[] = [];
-  for (const mod of courseModules) {
-    const modLessons = db
-      .select({ id: lessons.id, title: lessons.title })
-      .from(lessons)
-      .where(eq(lessons.moduleId, mod.id))
-      .all();
-    allCourseLessons.push(...modLessons);
-  }
-
-  // Find which lessons have quizzes
-  const lessonQuizzes: { lessonId: number; lessonTitle: string; quizId: number; quizTitle: string }[] = [];
-  for (const lesson of allCourseLessons) {
-    const quiz = getQuizByLessonId(lesson.id);
-    if (quiz) {
-      lessonQuizzes.push({
-        lessonId: lesson.id,
-        lessonTitle: lesson.title,
-        quizId: quiz.id,
-        quizTitle: quiz.title,
-      });
-    }
-  }
+  const rosterQuizzes = getRosterQuizzes(courseId);
 
   // Student rows: identity, progress, completion and what each paid
   const drillDown = getCourseDrillDown(courseId);
 
-  const students = drillDown.students.map((student) => {
-    // Get best quiz attempt for each quiz in this course
-    const quizScores = lessonQuizzes.map((lq) => {
-      const bestAttempt = getBestAttempt(student.userId, lq.quizId);
-      return {
-        quizId: lq.quizId,
-        quizTitle: lq.quizTitle,
-        lessonTitle: lq.lessonTitle,
-        bestScore: bestAttempt?.score ?? null,
-        passed: bestAttempt?.passed ?? null,
-      };
-    });
-
-    return { ...student, quizScores };
-  });
+  const students = drillDown.students.map((student) => ({
+    ...student,
+    quizScores: getBestQuizScores(student.userId, rosterQuizzes),
+  }));
 
   return {
     course,
     students,
     purchasesWithoutEnrollment: drillDown.purchasesWithoutEnrollment,
-    quizCount: lessonQuizzes.length,
+    quizCount: rosterQuizzes.length,
   };
 }
 
@@ -130,12 +90,17 @@ function progressBar(progress: number) {
   );
 }
 
-function quizzesNotPassedNote(count: number) {
-  return `${count} ${count === 1 ? "quiz" : "quizzes"} not passed`;
+/** A count with its noun, e.g. "1 quiz" or "3 quizzes". */
+function countOf(count: number, singular: string, plural: string) {
+  return `${count} ${count === 1 ? singular : plural}`;
 }
 
-function seatsNote(seats: { seatsBought: number; seatsRedeemed: number }) {
-  return `${seats.seatsBought} ${seats.seatsBought === 1 ? "seat" : "seats"}, ${seats.seatsRedeemed} redeemed`;
+function quizzesNotPassedNote(count: number) {
+  return `${countOf(count, "quiz", "quizzes")} not passed`;
+}
+
+function seatsNote(seats: TeamSeatCounts) {
+  return `${countOf(seats.seatsBought, "seat", "seats")}, ${seats.seatsRedeemed} redeemed`;
 }
 
 function formatDate(iso: string) {
@@ -212,13 +177,12 @@ export default function InstructorStudentRoster({
       <div className="mb-4 flex items-center gap-4 text-sm text-muted-foreground">
         <span className="flex items-center gap-1.5">
           <Users className="size-4" />
-          {students.length} {students.length === 1 ? "student" : "students"}{" "}
-          enrolled
+          {countOf(students.length, "student", "students")} enrolled
         </span>
         {quizCount > 0 && (
           <span className="flex items-center gap-1.5">
             <Award className="size-4" />
-            {quizCount} {quizCount === 1 ? "quiz" : "quizzes"}
+            {countOf(quizCount, "quiz", "quizzes")}
           </span>
         )}
       </div>

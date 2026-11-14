@@ -47,6 +47,7 @@ The app will be running at `http://localhost:5173`.
 | `npm run typecheck`            | Type-check the project                 |
 | `npm run db:migrate`           | Run database migrations                |
 | `npm run db:seed`              | Seed the database                      |
+| `npm run db:backfill-completions` | Record completions earned before recording existed (one-off) |
 | `npm run reset <slug>`         | Reset your repo to a lesson checkpoint |
 | `npm run cherry-pick <slug>`   | Cherry-pick a lesson's solution        |
 

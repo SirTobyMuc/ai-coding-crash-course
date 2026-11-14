@@ -4,7 +4,6 @@ import {
   quizzes,
   quizQuestions,
   quizOptions,
-  quizAttempts,
   quizAnswers,
 } from "~/db/schema";
 import { recordAttempt } from "~/services/quizService";
