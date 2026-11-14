@@ -123,18 +123,20 @@ export function markEnrollmentComplete(userId: number, courseId: number) {
     .get();
 }
 
-// Records that a student has Completed a course, if they have just earned it:
-// every lesson in the course completed and every quiz in it Passed (ADR 0001). Completion is permanent, so
-// an enrollment that is already Completed keeps its original date, and a user
-// without an enrollment is unaffected.
-export function recordCompletionIfEarned(userId: number, courseId: number) {
-  const enrollment = findEnrollment(userId, courseId);
-  if (!enrollment || enrollment.completedAt) return;
-
+// The completion rule (ADR 0001): a student has earned completion of a course
+// once every lesson in it is completed and every quiz in it is Passed. Returns
+// whether it is earned and, if so, the student's last qualifying activity: the
+// later of their latest lesson completion in the course and the first passing
+// attempt of the quiz they passed last (null when no such date is recorded).
+function evaluateCompletion(
+  userId: number,
+  courseId: number
+): { earned: false } | { earned: true; lastQualifyingActivity: string | null } {
   const lessonCounts = db
     .select({
       total: sql<number>`count(*)`,
       completed: sql<number>`count(${lessonProgress.id})`,
+      latestCompletion: sql<string | null>`max(${lessonProgress.completedAt})`,
     })
     .from(lessons)
     .innerJoin(modules, eq(lessons.moduleId, modules.id))
@@ -149,34 +151,89 @@ export function recordCompletionIfEarned(userId: number, courseId: number) {
     .where(eq(modules.courseId, courseId))
     .get();
 
-  if (!lessonCounts || lessonCounts.total === 0) return;
-  if (lessonCounts.completed < lessonCounts.total) return;
+  if (!lessonCounts || lessonCounts.total === 0) return { earned: false };
+  if (lessonCounts.completed < lessonCounts.total) return { earned: false };
 
-  // A quiz is Passed once any one attempt passed, whatever came after it.
-  const quizzesNotPassed = db
-    .select({ count: sql<number>`count(*)` })
+  // A quiz is Passed once any one attempt passed, whatever came after it, so it
+  // counts as Passed from its first passing attempt.
+  const firstPasses = db
+    .select({
+      firstPassedAt: sql<string | null>`(
+        select min(${quizAttempts.attemptedAt}) from ${quizAttempts}
+        where ${quizAttempts.quizId} = ${quizzes.id}
+          and ${quizAttempts.userId} = ${userId}
+          and ${quizAttempts.passed} = 1
+      )`,
+    })
     .from(quizzes)
     .innerJoin(lessons, eq(quizzes.lessonId, lessons.id))
     .innerJoin(modules, eq(lessons.moduleId, modules.id))
-    .where(
-      and(
-        eq(modules.courseId, courseId),
-        sql`not exists (
-          select 1 from ${quizAttempts}
-          where ${quizAttempts.quizId} = ${quizzes.id}
-            and ${quizAttempts.userId} = ${userId}
-            and ${quizAttempts.passed} = 1
-        )`
+    .where(eq(modules.courseId, courseId))
+    .all();
+
+  if (firstPasses.some((quiz) => quiz.firstPassedAt === null)) {
+    return { earned: false };
+  }
+
+  const dates = [
+    lessonCounts.latestCompletion,
+    ...firstPasses.map((quiz) => quiz.firstPassedAt),
+  ].filter((date): date is string => date !== null);
+  const lastQualifyingActivity = dates.length
+    ? dates.reduce((latest, date) => (date > latest ? date : latest))
+    : null;
+
+  return { earned: true, lastQualifyingActivity };
+}
+
+// Records completion on an enrollment that has none yet. Completion is
+// permanent, so an existing completion date is never changed.
+function setCompletionIfAbsent(enrollmentId: number, completedAt: string) {
+  return (
+    db
+      .update(enrollments)
+      .set({ completedAt })
+      .where(
+        and(eq(enrollments.id, enrollmentId), isNull(enrollments.completedAt))
       )
-    )
-    .get();
+      .run().changes > 0
+  );
+}
 
-  if ((quizzesNotPassed?.count ?? 0) > 0) return;
+// Records that a student has Completed a course, if they have just earned it,
+// dated now. An enrollment that is already Completed keeps its original date,
+// and a user without an enrollment is unaffected.
+export function recordCompletionIfEarned(userId: number, courseId: number) {
+  const enrollment = findEnrollment(userId, courseId);
+  if (!enrollment || enrollment.completedAt) return;
 
-  db.update(enrollments)
-    .set({ completedAt: new Date().toISOString() })
-    .where(and(eq(enrollments.id, enrollment.id), isNull(enrollments.completedAt)))
-    .run();
+  if (!evaluateCompletion(userId, courseId).earned) return;
+
+  setCompletionIfAbsent(enrollment.id, new Date().toISOString());
+}
+
+// One-off backfill for students who met the completion rule before completion
+// was recorded. Every enrollment without a completion that meets the rule is
+// marked Completed, dated to the student's last qualifying activity (falling
+// back to the enrollment date if no activity date is recorded). Enrollments
+// that already have a completion are never touched, so running it again
+// changes nothing. Returns the number of enrollments it marked Completed.
+export function backfillCompletions() {
+  const pending = db
+    .select()
+    .from(enrollments)
+    .where(isNull(enrollments.completedAt))
+    .all();
+
+  let completed = 0;
+  for (const enrollment of pending) {
+    const result = evaluateCompletion(enrollment.userId, enrollment.courseId);
+    if (!result.earned) continue;
+
+    const date = result.lastQualifyingActivity ?? enrollment.enrolledAt;
+    if (setCompletionIfAbsent(enrollment.id, date)) completed++;
+  }
+  return completed;
 }
 
 // Evaluates completion for the course a lesson belongs to.
