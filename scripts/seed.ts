@@ -1381,7 +1381,8 @@ You've completed the Building REST APIs course. You now have the skills to build
   // ─── Enrollments ───
   // Varied enrollment patterns:
   // - Emma: enrolled in both courses (nearly complete in course 1, mid-way in course 2)
-  // - James: enrolled in course 1 only (completed)
+  // - James: enrolled in course 1 only (Completed: every lesson completed and
+  //   both quizzes Passed, dated to his last lesson completion below)
   // - Olivia: enrolled in both courses (just started course 1, mid-way in course 2)
   // - Liam: enrolled in course 2 only (just started, abandoned)
   // - Sophia: enrolled in course 1 only (recently enrolled, barely started)
@@ -1394,7 +1395,7 @@ You've completed the Building REST APIs course. You now have the skills to build
         userId: students[1].id,
         courseId: course1.id,
         enrolledAt: daysAgo(45),
-        completedAt: daysAgo(10),
+        completedAt: daysAgo(27),
       },
       { userId: students[2].id, courseId: course1.id, enrolledAt: daysAgo(35) },
       { userId: students[2].id, courseId: course2.id, enrolledAt: daysAgo(30) },

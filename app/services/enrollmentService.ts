@@ -1,4 +1,4 @@
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, isNull, sql } from "drizzle-orm";
 import { db } from "~/db";
 import {
   enrollments,
@@ -6,6 +6,8 @@ import {
   modules,
   lessons,
   lessonProgress,
+  quizzes,
+  quizAttempts,
   LessonProgressStatus,
 } from "~/db/schema";
 
@@ -119,6 +121,77 @@ export function markEnrollmentComplete(userId: number, courseId: number) {
     )
     .returning()
     .get();
+}
+
+// Records that a student has Completed a course, if they have just earned it:
+// every lesson in the course completed and every quiz in it Passed (ADR 0001). Completion is permanent, so
+// an enrollment that is already Completed keeps its original date, and a user
+// without an enrollment is unaffected.
+export function recordCompletionIfEarned(userId: number, courseId: number) {
+  const enrollment = findEnrollment(userId, courseId);
+  if (!enrollment || enrollment.completedAt) return;
+
+  const lessonCounts = db
+    .select({
+      total: sql<number>`count(*)`,
+      completed: sql<number>`count(${lessonProgress.id})`,
+    })
+    .from(lessons)
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .leftJoin(
+      lessonProgress,
+      and(
+        eq(lessonProgress.lessonId, lessons.id),
+        eq(lessonProgress.userId, userId),
+        eq(lessonProgress.status, LessonProgressStatus.Completed)
+      )
+    )
+    .where(eq(modules.courseId, courseId))
+    .get();
+
+  if (!lessonCounts || lessonCounts.total === 0) return;
+  if (lessonCounts.completed < lessonCounts.total) return;
+
+  // A quiz is Passed once any one attempt passed, whatever came after it.
+  const quizzesNotPassed = db
+    .select({ count: sql<number>`count(*)` })
+    .from(quizzes)
+    .innerJoin(lessons, eq(quizzes.lessonId, lessons.id))
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .where(
+      and(
+        eq(modules.courseId, courseId),
+        sql`not exists (
+          select 1 from ${quizAttempts}
+          where ${quizAttempts.quizId} = ${quizzes.id}
+            and ${quizAttempts.userId} = ${userId}
+            and ${quizAttempts.passed} = 1
+        )`
+      )
+    )
+    .get();
+
+  if ((quizzesNotPassed?.count ?? 0) > 0) return;
+
+  db.update(enrollments)
+    .set({ completedAt: new Date().toISOString() })
+    .where(and(eq(enrollments.id, enrollment.id), isNull(enrollments.completedAt)))
+    .run();
+}
+
+// Evaluates completion for the course a lesson belongs to.
+export function recordCompletionIfEarnedForLesson(
+  userId: number,
+  lessonId: number
+) {
+  const lessonCourse = db
+    .select({ courseId: modules.courseId })
+    .from(lessons)
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .where(eq(lessons.id, lessonId))
+    .get();
+
+  if (lessonCourse) recordCompletionIfEarned(userId, lessonCourse.courseId);
 }
 
 export function getUserEnrolledCourses(userId: number) {

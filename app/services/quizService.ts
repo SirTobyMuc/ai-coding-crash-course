@@ -8,6 +8,7 @@ import {
   quizAnswers,
   QuestionType,
 } from "~/db/schema";
+import { recordCompletionIfEarnedForLesson } from "~/services/enrollmentService";
 
 // ─── Quiz Service ───
 // Handles quiz CRUD, question/option management, and attempt recording.
@@ -343,11 +344,18 @@ export function recordAttempt(
   score: number,
   passed: boolean
 ) {
-  return db
+  const attempt = db
     .insert(quizAttempts)
     .values({ userId, quizId, score, passed })
     .returning()
     .get();
+
+  // Passing a quiz can be the last thing a student needed to have Completed
+  // the course.
+  const quiz = getQuizById(quizId);
+  if (quiz) recordCompletionIfEarnedForLesson(userId, quiz.lessonId);
+
+  return attempt;
 }
 
 export function recordAnswer(

@@ -8,6 +8,7 @@ import {
   enrollments,
   LessonProgressStatus,
 } from "~/db/schema";
+import { recordCompletionIfEarnedForLesson } from "~/services/enrollmentService";
 
 // ─── Progress Service ───
 // Handles lesson completion tracking and course progress calculation.
@@ -56,6 +57,16 @@ export function getLessonProgressForCourse(userId: number, courseId: number) {
 }
 
 export function markLessonComplete(userId: number, lessonId: number) {
+  const progress = completeLesson(userId, lessonId);
+
+  // Completing a lesson can be the last thing a student needed to have
+  // Completed the course.
+  recordCompletionIfEarnedForLesson(userId, lessonId);
+
+  return progress;
+}
+
+function completeLesson(userId: number, lessonId: number) {
   const existing = getLessonProgress(userId, lessonId);
 
   if (existing) {
