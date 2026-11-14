@@ -423,5 +423,89 @@ describe("instructorReportingService", () => {
       expect(students).toHaveLength(3);
       expect(students.map((s) => s.userId)).not.toContain(buyer.id);
     });
+
+    describe("purchases without enrollment", () => {
+      it("lists a team buyer who is not enrolled with the full amount and the seats", () => {
+        const buyer = addUser("Bossy McBossface");
+        const seatOne = addUser("Seat One");
+        const seatTwo = addUser("Seat Two");
+        const bought = teamPurchase(buyer.id, base.course.id, 29995, 5, [
+          seatOne.id,
+          seatTwo.id,
+        ]);
+
+        const drillDown = getCourseDrillDown(base.course.id);
+        expect(drillDown.purchasesWithoutEnrollment).toEqual([
+          {
+            purchaseId: bought.id,
+            buyer: {
+              userId: buyer.id,
+              name: "Bossy McBossface",
+              email: buyer.email,
+            },
+            amountPaid: 29995,
+            purchasedAt: bought.createdAt,
+            teamPurchase: { seatsBought: 5, seatsRedeemed: 2 },
+          },
+        ]);
+        expect(drillDown.students.map((s) => s.userId)).not.toContain(
+          buyer.id
+        );
+      });
+
+      it("lists the purchase of a student who unenrolled", () => {
+        const leaver = addUser("Leaver");
+        enroll(leaver.id, base.course.id);
+        const bought = purchase(leaver.id, base.course.id, 4999);
+        unenrollUser(leaver.id, base.course.id);
+
+        expect(
+          getCourseDrillDown(base.course.id).purchasesWithoutEnrollment
+        ).toMatchObject([
+          {
+            purchaseId: bought.id,
+            buyer: { userId: leaver.id, name: "Leaver" },
+            amountPaid: 4999,
+            teamPurchase: null,
+          },
+        ]);
+      });
+
+      it("lists nothing when every purchase belongs to an enrolled student", () => {
+        const buyer = addUser("Bossy McBossface");
+        enroll(base.user.id, base.course.id);
+        purchase(base.user.id, base.course.id, 5999);
+        teamPurchase(buyer.id, base.course.id, 29995, 3, [buyer.id]);
+
+        expect(
+          getCourseDrillDown(base.course.id).purchasesWithoutEnrollment
+        ).toEqual([]);
+      });
+
+      it("adds up with the student rows to the course's Total Paid", () => {
+        const buyer = addUser("Team Buyer");
+        const seat = addUser("Seat Holder");
+        const leaver = addUser("Leaver");
+        enroll(base.user.id, base.course.id);
+        purchase(base.user.id, base.course.id, 5999);
+        purchase(base.user.id, base.course.id, 1000);
+        enroll(addUser("Staff Without Purchase").id, base.course.id);
+        teamPurchase(buyer.id, base.course.id, 29995, 5, [seat.id]);
+        enroll(leaver.id, base.course.id);
+        purchase(leaver.id, base.course.id, 2400);
+        unenrollUser(leaver.id, base.course.id);
+
+        const [summary] = getCourseSummariesForInstructor(base.instructor.id);
+        const drillDown = getCourseDrillDown(base.course.id);
+        const pageTotal =
+          drillDown.students.reduce((n, s) => n + s.amountPaid, 0) +
+          drillDown.purchasesWithoutEnrollment.reduce(
+            (n, p) => n + p.amountPaid,
+            0
+          );
+        expect(summary.totalPaid).toBe(39394);
+        expect(pageTotal).toBe(39394);
+      });
+    });
   });
 });

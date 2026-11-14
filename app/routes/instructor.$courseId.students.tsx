@@ -108,7 +108,12 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     return { ...student, quizScores };
   });
 
-  return { course, students, quizCount: lessonQuizzes.length };
+  return {
+    course,
+    students,
+    purchasesWithoutEnrollment: drillDown.purchasesWithoutEnrollment,
+    quizCount: lessonQuizzes.length,
+  };
 }
 
 function progressBar(progress: number) {
@@ -131,6 +136,14 @@ function quizzesNotPassedNote(count: number) {
 
 function seatsNote(seats: { seatsBought: number; seatsRedeemed: number }) {
   return `${seats.seatsBought} ${seats.seatsBought === 1 ? "seat" : "seats"}, ${seats.seatsRedeemed} redeemed`;
+}
+
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 function quizScoreBadge(score: number | null, passed: boolean | null) {
@@ -160,7 +173,8 @@ function quizScoreBadge(score: number | null, passed: boolean | null) {
 export default function InstructorStudentRoster({
   loaderData,
 }: Route.ComponentProps) {
-  const { course, students, quizCount } = loaderData;
+  const { course, students, purchasesWithoutEnrollment, quizCount } =
+    loaderData;
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -249,13 +263,7 @@ export default function InstructorStudentRoster({
                 </thead>
                 <tbody>
                   {students.map((student) => {
-                    const enrolledDate = new Date(
-                      student.enrolledAt
-                    ).toLocaleDateString("en-US", {
-                      year: "numeric",
-                      month: "short",
-                      day: "numeric",
-                    });
+                    const enrolledDate = formatDate(student.enrolledAt);
 
                     return (
                       <tr
@@ -338,6 +346,69 @@ export default function InstructorStudentRoster({
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* Purchases whose buyer has no enrollment: with the student rows, these
+          make up the course's Total Paid. */}
+      {purchasesWithoutEnrollment.length > 0 && (
+        <section className="mt-8">
+          <h2 className="mb-1 text-xl font-semibold">
+            Purchases without enrollment
+          </h2>
+          <p className="mb-4 text-sm text-muted-foreground">
+            Paid for this course by someone not enrolled on it: team buyers
+            and students who unenrolled.
+          </p>
+          <Card>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/50">
+                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                        Buyer
+                      </th>
+                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                        Purchased
+                      </th>
+                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                        Amount Paid
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {purchasesWithoutEnrollment.map((p) => (
+                      <tr
+                        key={p.purchaseId}
+                        className="border-b border-border last:border-0"
+                      >
+                        <td className="px-4 py-3">
+                          <p className="text-sm font-medium">{p.buyer.name}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {p.buyer.email}
+                          </p>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-muted-foreground">
+                          {formatDate(p.purchasedAt)}
+                        </td>
+                        <td className="px-4 py-3">
+                          <p className="text-sm font-medium">
+                            {formatAmountPaid(p.amountPaid)}
+                          </p>
+                          {p.teamPurchase && (
+                            <p className="text-xs text-muted-foreground">
+                              {seatsNote(p.teamPurchase)}
+                            </p>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </section>
       )}
     </div>
   );

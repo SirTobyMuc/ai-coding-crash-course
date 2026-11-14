@@ -93,9 +93,24 @@ export type DrillDownStudent = {
   quizzesNotPassed: number;
 };
 
+export type PurchaseWithoutEnrollment = {
+  purchaseId: number;
+  buyer: { userId: number; name: string; email: string };
+  /** The full amount of the purchase, in US cents. */
+  amountPaid: number;
+  purchasedAt: string;
+  /** For a team purchase, the team seats it bought and how many are redeemed. */
+  teamPurchase: { seatsBought: number; seatsRedeemed: number } | null;
+};
+
 export type CourseDrillDown = {
   /** One row per enrollment on the course. */
   students: DrillDownStudent[];
+  /**
+   * Every purchase for the course whose buyer has no enrollment on it, so
+   * that student amounts plus these amounts add up to Total Paid.
+   */
+  purchasesWithoutEnrollment: PurchaseWithoutEnrollment[];
 };
 
 /**
@@ -226,7 +241,50 @@ export function getCourseDrillDown(courseId: number): CourseDrillDown {
     passedQuizRows.map((r) => [r.userId, r.passed])
   );
 
+  // Purchases whose buyer is not among the enrolled students: team buyers
+  // who never redeemed a seat, and students who unenrolled.
+  const enrolledUserIds = new Set(studentRows.map((r) => r.userId));
+  const purchaseRows = db
+    .select({
+      purchaseId: purchases.id,
+      userId: users.id,
+      name: users.name,
+      email: users.email,
+      amountPaid: purchases.amountPaid,
+      purchasedAt: purchases.createdAt,
+    })
+    .from(purchases)
+    .innerJoin(users, eq(users.id, purchases.userId))
+    .where(eq(purchases.courseId, courseId))
+    .orderBy(purchases.createdAt, purchases.id)
+    .all();
+  const seatPurchaseRows = db
+    .select({
+      purchaseId: coupons.purchaseId,
+      seatsBought: count(coupons.id),
+      seatsRedeemed: count(coupons.redeemedByUserId),
+    })
+    .from(coupons)
+    .where(and(eq(coupons.courseId, courseId), isNotNull(coupons.purchaseId)))
+    .groupBy(coupons.purchaseId)
+    .all();
+  const seatsByPurchase = new Map(
+    seatPurchaseRows.map((r) => [
+      r.purchaseId,
+      { seatsBought: r.seatsBought, seatsRedeemed: r.seatsRedeemed },
+    ])
+  );
+
   return {
+    purchasesWithoutEnrollment: purchaseRows
+      .filter((r) => !enrolledUserIds.has(r.userId))
+      .map((r) => ({
+        purchaseId: r.purchaseId,
+        buyer: { userId: r.userId, name: r.name, email: r.email },
+        amountPaid: r.amountPaid,
+        purchasedAt: r.purchasedAt,
+        teamPurchase: seatsByPurchase.get(r.purchaseId) ?? null,
+      })),
     students: studentRows.map((row) => {
       const amountPaid = paidByUser.get(row.userId);
       const seatBuyer = teamBuyerByRedeemer.get(row.userId);
